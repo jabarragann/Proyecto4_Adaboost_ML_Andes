@@ -69,8 +69,9 @@ def hyperTan(z):
     return np.tanh(z)
 
 
-def computeCost(theta, X, y, reg, nnArchi):
+def computeCost(theta, X, y, reg, nnArchi,D,labels):
     # Recover parameter matrices
+    v = getAdaboostVWeights(D, X, y, labels)
     m = y.shape[0]
     n = X.shape[1] - 1
     w1 = theta[:nnArchi.w1Size].reshape(nnArchi.hiddenNeurons, nnArchi.inputNeurons + 1)
@@ -90,18 +91,19 @@ def computeCost(theta, X, y, reg, nnArchi):
 
     # Cost Function
     m = y.shape[0]
-    cost = -y * np.log(y_estimate + (1 - safetyFactor)) - (1 - y) * np.log(1 - y_estimate * safetyFactor)
-    cost = (1 / m) * sum(cost)
+    cost =  v * ( -y * np.log(y_estimate + (1 - safetyFactor)) - (1 - y) * np.log(1 - y_estimate * safetyFactor) )
+    cost = (1 / m) * sum(np.sum(cost,axis=1))
 
     # Add Regularization Term
     regularization_term = np.sum(w1[:, 1:] ** 2) + np.sum(w2[:, 1:] ** 2)
     regularization_term = (regularization_term * reg) / (2 * m)
 
-    return cost[0] + regularization_term
+    return cost + regularization_term
 
 
-def computeGradient(theta, X, y, reg, nnArchi):
+def computeGradient(theta, X, y, reg, nnArchi,D,labels):
     # Recover parameter matrices
+    v = getAdaboostVWeights(D, X, y, labels)
     m = y.shape[0]
     n = X.shape[1] - 1
     w1 = theta[:nnArchi.w1Size].reshape(nnArchi.hiddenNeurons, nnArchi.inputNeurons + 1)
@@ -122,7 +124,7 @@ def computeGradient(theta, X, y, reg, nnArchi):
     y_estimate = z3
 
     # Back-Propagation
-    d3 = y_estimate - y.T
+    d3 =  v.T * (y_estimate - y.T)
     d2 = w2.T @ d3 * activationDerivative(z2, nnArchi.innerActivation)
     d2 = d2[1:, :]
 
@@ -158,7 +160,7 @@ def gradientCheck(reg, epsilon=10e-5):
     # Initilize a smaller Network to test Backpropagation
     n = 3
     hiddenNeurons = 5
-    outputNeurons = 1
+    outputNeurons = 3
     m = 5
     testNN = NeuralNetworkArchi(n, outputNeurons, hiddenNeurons, 'tanh')
 
@@ -168,10 +170,19 @@ def gradientCheck(reg, epsilon=10e-5):
     theta = np.append(theta1.reshape(-1, 1), theta2.reshape(-1, 1))
     X = debugInitializeWeights(m, n - 1);
     X = np.insert(X, 0, 1, axis=1)
-    y = np.array(1 + np.arange(m) % (outputNeurons)).reshape(m, 1);
+    labels = np.array(0 + np.arange(m) % (outputNeurons)).reshape(m, 1);
+    y = np.zeros((m,outputNeurons))
+    for i in range(m):
+        y[i,labels[i]]=1
+
+    D = initAdaboostWeights(X,y, labels)
+    D[0,0][1] =D[0,0][1]+0.05
+    D[0,0][2] =D[0,0][2]-0.05
+    D[1,0][0] = D[1, 0][0] + 0.07
+    D[1,0][2] = D[1, 0][2] - 0.07
 
     # Calculate Exact Gradient
-    exactGradient = computeGradient(theta, X, y, reg, testNN)
+    exactGradient = computeGradient(theta, X, y, reg, testNN,D,labels)
 
     # Aproximate Gradient
     aproxGradient = np.zeros_like(theta)
@@ -179,8 +190,8 @@ def gradientCheck(reg, epsilon=10e-5):
 
     for i in range(theta.size):
         epsilonVector[i] = epsilon
-        up = computeCost(theta + epsilonVector, X, y, reg, testNN)
-        down = computeCost(theta - epsilonVector, X, y, reg, testNN)
+        up = computeCost(theta + epsilonVector, X, y, reg, testNN,D,labels)
+        down = computeCost(theta - epsilonVector, X, y, reg, testNN,D,labels)
         aproxGradient[i] = (up - down) / (2 * epsilon)
         epsilonVector[i] = 0
 
@@ -210,7 +221,7 @@ def gradientDescent(theta, X, y, alpha, numIters):
     return theta, costHistory
 
 
-def minibatchGradientDescent(theta, X, y, alpha, reg, numIters, nnArchi,P, batchSize=45):
+def minibatchGradientDescent(theta, X, y, alpha, reg, numIters, nnArchi,P,D,labels, batchSize=45):
     takeHistory = numIters
     costHistory = np.zeros(int(numIters / takeHistory) + 1)
     m = y.shape[0]
@@ -222,13 +233,13 @@ def minibatchGradientDescent(theta, X, y, alpha, reg, numIters, nnArchi,P, batch
         y_batch = y[randIdx, :]
 
         # Update parameter vector
-        gradient = computeGradient(theta, X_batch, y_batch, reg, nnArchi)
+        gradient = computeGradient(theta, X_batch, y_batch, reg, nnArchi,D,labels)
         theta = theta - (alpha / m) * gradient
 
         # Compute Cost and Gradient
         if i % takeHistory == 0:
             if True:
-                costHistory[int(i / takeHistory)] = computeCost(theta, X, y, reg, nnArchi)
+                costHistory[int(i / takeHistory)] = computeCost(theta, X, y, reg, nnArchi,D,labelsTrain)
 
     return theta, costHistory
 
@@ -260,15 +271,16 @@ def printToLogAndConsole(strToPrint):
     print(strToPrint)
     logging.debug(strToPrint)
 
-def initAdaboostWeights(xTrain,labelsTrain):
-    B = xTrain.shape[0] * 3
+def initAdaboostWeights(xTrain,y,labelsTrain):
+    numberOfClasses = y.shape[1]
+    B = xTrain.shape[0] * (numberOfClasses -1)
     D = np.array([])
 
     xTrainSize = xTrain.shape[0]
     # D-Weights
     for i in range(xTrainSize):
         D = np.append(D, {})
-        for j in range(4):
+        for j in range(numberOfClasses):
             if j != labelsTrain[i]:
                 D[i][j] = 1 / B
 
@@ -277,8 +289,19 @@ def initAdaboostWeights(xTrain,labelsTrain):
 def getAdaboostPWeights(D):
     P = np.array(list(map(lambda t: sum(t.values()), D.reshape(-1, ) ) ) )
     P = P / sum(P)
+    return P
 
-    return P / sum(P)
+def getAdaboostVWeights(D,xTrain,y,labelsTrain):
+    classes = y.shape[1]
+    m = xTrain.shape[0]
+    v = np.zeros((m,classes))
+
+    for i in range(m):
+        v[i,labelsTrain[i]] = 1
+        for key,values in D[i,0].items():
+            v[i,key] = D[i,0][key] / max(D[i,0].values())
+
+    return v
 
 def predict(theta, X, y,labels, nnArchi):
     # Recover parameter matrices
@@ -298,20 +321,45 @@ def predict(theta, X, y,labels, nnArchi):
 
     return y_estimate
 
+def initNeuralNetworksParameters(nn1):
+    ep = 0.7
+    w1 = np.random.rand(nn1.hiddenNeurons, nn1.inputNeurons + 1) * ep * 2 - ep
+    w2 = np.random.rand(nn1.outputNeurons, nn1.hiddenNeurons + 1) * ep * 2 - ep
+
+    # Flat matrices into one single parameter vector
+    return np.append(w1, w2)
+
+def predictionAdaboost(bankOfNeuralNetworks,bankOfBeta, X, y,labels, nnArchi):
+    results = np.zeros((y.shape[0],4))
+    m = y.shape[0]
+    errorHistory = np.zeros(bankOfNeuralNetworks.shape[0])
+    for i in range(bankOfNeuralNetworks.shape[0]):
+        theta = bankOfNeuralNetworks[i,:]
+        yEstimates = np.log(1/bankOfBeta[i])*predict(theta,X,y,labels,nnArchi)
+        results = results + yEstimates
+
+        tempPredictions = np.argmax(results,axis = 1)
+        errorHistory[i] =  1 - (sum(np.equal(tempPredictions, labels)))/m
+
+    predictions = np.argmax(results,axis = 1)
+
+    acc = sum(np.equal(predictions, labels))
+    return acc / m , errorHistory
 
 # COMMAND LINE ARGUMENT PARSER
 # GLOBAL CONSTANTS
 import argparse
 
 ap = argparse.ArgumentParser()
-ap.add_argument("-r", "--reg", required=False, default="0.01", help="Neural Network Regularization Parameter")
+ap.add_argument("-r", "--reg", required=False, default="0.001", help="Neural Network Regularization Parameter")
 ap.add_argument("-l", "--load", required=False, default="0", help="Load a trained neural network")
-ap.add_argument("-s", "--save", required=False, default="0", help="Save the neural network")
+ap.add_argument("-s", "--save", required=False, default="1", help="Save the neural network")
 loadDirectory = "06-01_00-42-30_ACC_TR-0.72643_ACC_TE-0.72393_FC-0.34179_REG_0.010_HN1-020_I-400000_para.csv"
 ap.add_argument("-d", "--directory", required=False, default=loadDirectory,
                 help="Directory where the neural network is found")
 ap.add_argument("-a", "--alpha", required=False, default="3000", help="Alpha")
-ap.add_argument("-i", "--iterations", required=False, default="1000", help="Number of interations of backpropagation")
+ap.add_argument("-i", "--iterations", required=False, default="80000", help="Number of interations of backpropagation")
+ap.add_argument("-b", "--adaboost_iter", required=False, default="3", help="Number of interations of Adaboost")
 
 args = vars(ap.parse_args())
 
@@ -321,6 +369,7 @@ SAVE = bool(int(args['save']))
 LOAD = bool(int(args['load']))
 FILE_TO_LOAD = args['directory']
 ALPHA = int(args['alpha'])
+ADABOOST_ITERATIONS = int(args['adaboost_iter'])
 
 if __name__ == '__main__':
 
@@ -348,7 +397,7 @@ if __name__ == '__main__':
     xTest = np.insert(xTest, 0, 1, axis=1)
 
     # NEURAL NETWORK PARAMETERS
-    hiddenNeurons = 20
+    hiddenNeurons = 90
     outputNeurons = 4
     inputNeurons = xTrain.shape[1] - 1
     innerActivation = 'sigmoid'
@@ -374,76 +423,122 @@ if __name__ == '__main__':
         theta = np.append(w1, w2)
 
     # Cheking Backpropagation implementation
-    printToLogAndConsole(
-        "\nCheck Backpropagation(Difference between Numerical Gradient and Analytical Gradient): {:.4E}\n".format(
-            gradientCheck(REG)))
+    check = gradientCheck(REG)
+    printToLogAndConsole("\nCheck Backpropagation(Difference between Numerical" \
+                         "Gradient and Analytical Gradient): {:.4E}\n".format(check))
 
     # Print Global Constants
     printToLogAndConsole("{:25}: {:06.4f}".format("Regularization", REG))
-    printToLogAndConsole("{:25}: {:06d}".format("Maxiters", NUM_ITERS))
+    printToLogAndConsole("{:25}: {:06d}".format("Backpropagation iterations", NUM_ITERS))
+    printToLogAndConsole("{:25}: {:06d}".format("Adaboost iterations", ADABOOST_ITERATIONS))
     printToLogAndConsole("{:25}: {:6s}".format("Load", str(LOAD)))
     printToLogAndConsole("{:25}: {:6s}".format("Save", str(SAVE)))
     printToLogAndConsole("{:25}: {:6s}\n".format("File", FILE_TO_LOAD))
 
     # Initial Cost Calculation
+    D=initAdaboostWeights(xTrain,yTrain,labelsTrain)
     printToLogAndConsole("Training Neural Network...\n")
-    initialCost = computeCost(theta, xTrain, yTrain, REG, nn1)
+    initialCost = computeCost(theta, xTrain, yTrain, REG, nn1,D,labelsTrain)
     printToLogAndConsole("Initial Cost: {:.5f}\n".format(initialCost))
+
+    adaboostIterations = ADABOOST_ITERATIONS
+    bankOfNeuralNetworks = np.zeros((adaboostIterations,theta.shape[0]))
+    bankOfPseudoLoss = np.zeros(adaboostIterations)
+    bankOfBeta = np.zeros(adaboostIterations)
 
     ###########################################################
     # Init Adaboost
-    D=initAdaboostWeights(xTrain,labelsTrain)
-    # Loop
-    P=getAdaboostPWeights(D)
-    # Stochastic Gradient Descent
+    D=initAdaboostWeights(xTrain,yTrain,labelsTrain)
+
+    # Adaboost Loop
     startTime1 = time.time()
-    theta, costHistory = minibatchGradientDescent(theta, xTrain, yTrain, ALPHA, REG, NUM_ITERS, nn1,P.reshape(-1,))
+    for t in range(adaboostIterations):
+        theta = initNeuralNetworksParameters(nn1)
+        P=getAdaboostPWeights(D)
+        # Stochastic Gradient Descent
+        theta, costHistory = minibatchGradientDescent(theta, xTrain, yTrain, ALPHA, REG, NUM_ITERS, nn1,P.reshape(-1,),D,labelsTrain)
+        bankOfNeuralNetworks[t,:] = theta.reshape(1,-1)
+
+        # Pseudoloss calculation
+        yEstimates = predict(theta, xTrain, yTrain, labelsTrain, nn1)
+
+        loss = 0
+        for i in range(xTrain.shape[0]):
+            res = np.array( list(map(lambda t: list(t), D[i,0].items())))
+            const = 1 - yEstimates[i,labelsTrain[i]]
+            loss += sum( res[:,1] * (const + yEstimates[i,res[:,0].astype(np.int)]) )
+        loss = 0.5 * loss
+        beta = loss / (1 - loss)
+
+        bankOfPseudoLoss[t] = loss
+        bankOfBeta[t] = beta
+
+        # Update Weights
+        for i in range(xTrain.shape[0]):
+            for key,value in D.reshape(-1,)[i].items():
+                D[i,0][key]= D.reshape(-1,)[i][key] * beta ** (0.5*(1 + yEstimates[i,labelsTrain[i]] + yEstimates[i,key]))
+
+        normalization = sum(map(lambda dict1: sum(dict1.values()), D.reshape(-1, )))
+        for i in range(xTrain.shape[0]):
+            for key,value in D[i,0].items():
+                D[i,0][key]= D[i,0][key]/normalization
+
+        #tmp = sum(map(lambda dict1: sum(dict1.values()), D.reshape(-1, )))
+        print("number of weak classifiers:",t)
+        print("adaboost pseudo loss:", loss,"\n")
+        #print("temp:",tmp)
+        ############################################################
+
     endTime1 = time.time()
-    # Pseudoloss calculation
-    yEstimates = predict(theta, xTrain, yTrain, labelsTrain, nn1)
-    print(3)
-    loss = 0
-    for i in range(xTrain.shape[0]):
-        res = np.array( list(map(lambda t: list(t), D[i,0].items())))
-        const = 1 - yEstimates[i,labelsTrain[i]]
-        loss += sum( res[:,1] * (const + yEstimates[i,res[:,0].astype(np.int)]) )
-    loss = 0.5 * loss
-    beta = loss / (1 - loss)
-
-    ############################################################
-
-    finalCost = computeCost(theta, xTrain, yTrain, REG, nn1)
 
     # Logging training information
-    printToLogAndConsole("Finish Training...\n")
-    printToLogAndConsole("Gradient Descent Execution time: {:4.3f}\n".format(endTime1 - startTime1))
-    printToLogAndConsole("Regularization: {:.4f}".format(REG))
-    printToLogAndConsole("Iterations: {:03d}".format(NUM_ITERS))
-    printToLogAndConsole("Initial Cost: {:.5f}".format(initialCost))
-    printToLogAndConsole("Final Cost: {:.5f}".format(finalCost))
+    adaboostTrainAccuracy,trainErrorHistory = predictionAdaboost(bankOfNeuralNetworks, bankOfBeta, xTrain, yTrain, labelsTrain, nn1)
+    adaboostTestAccuracy,testErrorHistory = predictionAdaboost(bankOfNeuralNetworks, bankOfBeta, xTest, yTest, labelsTest, nn1)
+    finalCost = computeCost(theta, xTrain, yTrain, REG, nn1,D,labelsTrain)
+    formatedTime = time.strftime('%H:%M:%S', time.gmtime(endTime1 - startTime1))
 
-    # EVALUATE MODEL IN TEST SET
-    trainingAccuracy = evaluateModel(theta, xTrain, yTrain,labelsTrain, nn1)
-    testAccuracy = evaluateModel(theta, xTest, yTest,labelsTest, nn1)
+    printToLogAndConsole("Finish Training...\n")
+    printToLogAndConsole("Adaboost Execution time: {:4.3f}".format(endTime1 - startTime1))
+    printToLogAndConsole("Adaboost Execution time: {:s}".format(formatedTime))
+    printToLogAndConsole("Regularization: {:.6f}".format(REG))
+    printToLogAndConsole("Iterations: {:03d}".format(NUM_ITERS))
+    printToLogAndConsole("Initial Cost: {:.6f}".format(initialCost))
+    printToLogAndConsole("Final Cost: {:.6f}".format(finalCost))
+
+    # # EVALUATE MODEL IN TEST SET
+    # trainingAccuracy = evaluateModel(theta, xTrain, yTrain,labelsTrain, nn1)
+    # testAccuracy = evaluateModel(theta, xTest, yTest,labelsTest, nn1)
 
     # LOGGING EVALUATIONS
     printToLogAndConsole("Model evaluation\n")
-    printToLogAndConsole("Accuracy in training Set: {:.5f}".format(trainingAccuracy))
-    printToLogAndConsole("Accuracy in test Set (Exact Gradient): {:.5f}".format(testAccuracy))
+    printToLogAndConsole("Accuracy in training Set: {:.6f}".format(adaboostTrainAccuracy))
+    printToLogAndConsole("Accuracy in test Set (Exact Gradient): {:.6f}".format(adaboostTestAccuracy))
 
     # SAVE DATA
     if SAVE:
         from datetime import datetime
 
         timeStamp = datetime.now().strftime('%m-%d_%H-%M-%S_')
-        name = 'ACC_TR-{:.5f}_ACC_TE-{:.5f}_FC-{:.5f}_REG_{:.3f}_HN1-{:03d}_I-{:05d}_' \
-            .format(trainingAccuracy, testAccuracy, finalCost, REG, nn1.hiddenNeurons, NUM_ITERS)
+        name = 'ACC_TR-{:.6f}_ACC_TE-{:.6f}_FC-{:.6f}_REG_{:.6f}_HN1-{:03d}_I-{:05d}_ADA_BOOST_{:04d}' \
+            .format(adaboostTrainAccuracy, adaboostTestAccuracy, finalCost, REG, nn1.hiddenNeurons, NUM_ITERS,adaboostIterations)
 
         with open('savedData/' + timeStamp + name + 'para.csv', 'w') as parametersFile:
-            [parametersFile.write("{:+015.10f}\n".format(i)) for i in theta.squeeze()]
+            for i in range(bankOfNeuralNetworks.shape[0]):
+                for j in range(bankOfNeuralNetworks.shape[1]):
+                    parametersFile.write( "{:+015.10f},".format(bankOfNeuralNetworks[i,j]))
+                parametersFile.write("\n")
 
     # GENERATE PLOTS
-    # fig, axes = plt.subplots(1)
-    # plt.plot(costHistory[1:-3])
-    #
-    # plt.show()
+    fig, axes = plt.subplots(1,figsize = (10, 8), dpi = 100)
+    axes.plot(trainErrorHistory,label="Error en el set de Entrenamiento")
+    axes.plot(testErrorHistory,label="Error en el set de Prueba")
+    #axes.set_ylim((min(trainErrorHistory)-2,max(trainErrorHistory)+2))
+    axes.set_title(name)
+    axes.set_xlabel("Número de iteraciones de Adaboost")
+    axes.set_ylabel("Porcentaje de error (%)")
+    axes.grid()
+    axes.legend()
+
+    fig.savefig('savedData/' + timeStamp + name+".jpg")
+
+    plt.show()
